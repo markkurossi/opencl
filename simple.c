@@ -4,6 +4,10 @@
 
 #include <stdio.h>
 #include <OpenCL/opencl.h>
+
+#include <mach/mach_time.h>
+#include <stdint.h>
+
 #define DATA_SIZE (1024)
 
 const char *KernelSource =
@@ -16,34 +20,71 @@ int main(void)
 {
   int err;
   cl_device_id device_id;
-  clGetDeviceIDs(NULL, CL_DEVICE_TYPE_GPU, 1, &device_id, NULL);
-  cl_context context = clCreateContext(0, 1, &device_id, NULL, NULL, &err);
-  cl_command_queue commands = clCreateCommandQueue(context, device_id, 0, &err);
-  cl_program program = clCreateProgramWithSource(context, 1, (const char **) & KernelSource, NULL, &err);
-  clBuildProgram(program, 0, NULL, NULL, NULL, NULL);
-  cl_kernel kernel = clCreateKernel(program, "square", &err);
-  cl_mem input = clCreateBuffer(context,  CL_MEM_READ_ONLY,  sizeof(float) * DATA_SIZE, NULL, NULL);
-  cl_mem output = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(float) * DATA_SIZE, NULL, NULL);
+  cl_context context;
+  cl_command_queue commands;
+  cl_program program;
+  cl_kernel kernel;
+  cl_mem input;
+  cl_mem output;
   float data[DATA_SIZE];
-  for (int i = 0; i < DATA_SIZE; i++) { data[i] = i; }
-  err = clEnqueueWriteBuffer(commands, input, CL_TRUE, 0, sizeof(float) * DATA_SIZE, data, 0, NULL, NULL);
+  unsigned int count = DATA_SIZE;
+  size_t local;
+  size_t global;
+  float results[DATA_SIZE];
+  unsigned int correct = 0;
+  uint64_t ts;
+
+  clGetDeviceIDs(NULL, CL_DEVICE_TYPE_GPU, 1, &device_id, NULL);
+  context = clCreateContext(0, 1, &device_id, NULL, NULL, &err);
+  commands = clCreateCommandQueue(context, device_id, 0, &err);
+  program = clCreateProgramWithSource(context, 1,
+                                      (const char **) & KernelSource, NULL,
+                                      &err);
+  clBuildProgram(program, 0, NULL, NULL, NULL, NULL);
+
+  kernel = clCreateKernel(program, "square", &err);
+  input = clCreateBuffer(context,  CL_MEM_READ_ONLY,  sizeof(float) * DATA_SIZE,
+                         NULL, NULL);
+  output = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(float) * DATA_SIZE,
+                          NULL, NULL);
+
+
+  for (int i = 0; i < DATA_SIZE; i++)
+    data[i] = i;
+
+  err = clEnqueueWriteBuffer(commands, input, CL_TRUE, 0,
+                             sizeof(float) * DATA_SIZE, data, 0, NULL, NULL);
   clSetKernelArg(kernel, 0, sizeof(cl_mem), &input);
   clSetKernelArg(kernel, 1, sizeof(cl_mem), &output);
-  unsigned int count = DATA_SIZE;
-  clSetKernelArg(kernel, 2, sizeof(unsigned int), &count);
-  size_t local;
-  clGetKernelWorkGroupInfo(kernel, device_id, CL_KERNEL_WORK_GROUP_SIZE, sizeof(local), &local, NULL);
-  size_t global = count;
-  clEnqueueNDRangeKernel(commands, kernel, 1, NULL, &global, &local, 0, NULL, NULL);
-  clFinish(commands);
 
-  float results[DATA_SIZE];
-  clEnqueueReadBuffer(commands, output, CL_TRUE, 0, sizeof(float) * count, results, 0, NULL, NULL);
-  unsigned int correct = 0;
-  for (int i = 0; i < count; i++) {
-      if (results[i] == data[i] * data[i]) { correct++; }
-  }
+  clSetKernelArg(kernel, 2, sizeof(unsigned int), &count);
+  clGetKernelWorkGroupInfo(kernel, device_id, CL_KERNEL_WORK_GROUP_SIZE,
+                           sizeof(local), &local, NULL);
+  global = count;
+
+  ts = mach_absolute_time();
+
+  clEnqueueNDRangeKernel(commands, kernel, 1, NULL, &global, &local, 0,
+                         NULL, NULL);
+  clFinish(commands);
+  ts = mach_absolute_time() - ts;
+  printf("OpenCL: %lld\n", ts);
+
+  clEnqueueReadBuffer(commands, output, CL_TRUE, 0, sizeof(float) * count,
+                      results, 0, NULL, NULL);
+
+
+  ts = mach_absolute_time();
+
+  for (int i = 0; i < count; i++)
+      if (results[i] == data[i] * data[i])
+        correct++;
+
+  ts = mach_absolute_time() - ts;
+  printf("CPU: %lld\n", ts);
+
   printf("Computed '%d/%d' correct values!\n", correct, count);
+
   clReleaseMemObject(input);
   clReleaseMemObject(output);
   clReleaseProgram(program);
